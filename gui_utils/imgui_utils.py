@@ -178,12 +178,14 @@ def click_hidden_window(label, x, y, width, height, img_w, img_h, enabled=True):
     img_x, img_y = 0, 0
     if imgui.is_mouse_down():
         posx, posy = imgui.get_mouse_pos()
+
         if posx >= x and posx < x + width and posy >= y and posy < y + height:
             if imgui.is_mouse_clicked():
                 clicked = True
             down = True
             img_x = round((posx - x) / (width - 1) * (img_w - 1))
             img_y = round((posy - y) / (height - 1) * (img_h - 1))
+
     imgui.end()
     imgui.pop_style_color(2)
     return clicked, down, img_x, img_y

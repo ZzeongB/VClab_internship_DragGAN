@@ -24,15 +24,23 @@ from viz import latent_widget
 from viz import drag_widget
 from viz import capture_widget
 
+## my own latent vector: latent_transformer2.npy or latent3.npy or gradient.npy
+np_load = np.load('latent_vectors/latent3.npy')
+np_load = torch.from_numpy(np_load)
+
+## full-body
+pt_load = torch.load('latent_vectors/3.pt')
+print(pt_load)
+
 #----------------------------------------------------------------------------
 
 class Visualizer(imgui_window.ImguiWindow):
-    def __init__(self, capture_dir=None):
+    def __init__(self, capture_dir=None,  w_load=None):
         super().__init__(title='DragGAN', window_width=3840, window_height=2160)
 
         # Internals.
         self._last_error_print  = None
-        self._async_renderer    = AsyncRenderer()
+        self._async_renderer    = AsyncRenderer(w_load=w_load)
         self._defer_rendering   = 0
         self._tex_img           = None
         self._tex_obj           = None
@@ -143,6 +151,7 @@ class Visualizer(imgui_window.ImguiWindow):
                 self.drag_widget.init_mask(self.image_w, self.image_h)
             clicked, down, img_x, img_y = imgui_utils.click_hidden_window(
                 '##image_area', self._image_area[0], self._image_area[1], self._image_area[2], self._image_area[3], self.image_w, self.image_h)
+            if clicked: print(img_x, img_y)
             self.drag_widget.action(clicked, down, img_x, img_y)
 
         # Begin control pane.
@@ -251,7 +260,7 @@ class Visualizer(imgui_window.ImguiWindow):
 #----------------------------------------------------------------------------
 
 class AsyncRenderer:
-    def __init__(self):
+    def __init__(self, w_load=None):
         self._closed        = False
         self._is_async      = False
         self._cur_args      = None
@@ -261,6 +270,7 @@ class AsyncRenderer:
         self._args_queue    = None
         self._result_queue  = None
         self._process       = None
+        self.w_load         = w_load
 
     def close(self):
         self._closed = True
@@ -310,6 +320,7 @@ class AsyncRenderer:
     def _set_args_sync(self, **args):
         if self._renderer_obj is None:
             self._renderer_obj = renderer.Renderer()
+        args['w_load'] = self.w_load  # Pass w_load to renderer_obj.render
         self._cur_result = self._renderer_obj.render(**args)
 
     def get_result(self):
@@ -359,7 +370,7 @@ def main(
 
     Optional PATH argument can be used specify which .pkl file to load.
     """
-    viz = Visualizer(capture_dir=capture_dir)
+    viz = Visualizer(capture_dir=capture_dir, w_load=np_load)
 
     if browse_dir is not None:
         viz.pickle_widget.search_dirs = [browse_dir]

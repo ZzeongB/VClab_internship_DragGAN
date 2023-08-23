@@ -1,0 +1,17 @@
+
+Traceback (most recent call last):
+  File "/home/vclab/DragGAN/viz/renderer.py", line 114, in render
+    self._render_drag_impl(res, **args)
+  File "/home/vclab/DragGAN/viz/renderer.py", line 313, in _render_drag_impl
+    img, feat = G(ws, label, truncation_psi=trunc_psi, noise_mode=noise_mode, input_is_w=True, return_feature=True)
+  File "/home/vclab/anaconda3/envs/stylegan3/lib/python3.9/site-packages/torch/nn/modules/module.py", line 1501, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/home/vclab/DragGAN/training/networks_stylegan2.py", line 565, in forward
+    img = self.synthesis(ws, update_emas=update_emas, return_feature=return_feature, **synthesis_kwargs)
+  File "/home/vclab/anaconda3/envs/stylegan3/lib/python3.9/site-packages/torch/nn/modules/module.py", line 1501, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/home/vclab/DragGAN/training/networks_stylegan2.py", line 506, in forward
+    misc.assert_shape(ws, [None, self.num_ws, self.w_dim])
+  File "/home/vclab/DragGAN/torch_utils/misc.py", line 84, in assert_shape
+    raise AssertionError(f'Wrong number of dimensions: got {tensor.ndim}, expected {len(ref_shape)}')
+AssertionError: Wrong number of dimensions: got 4, expected 3

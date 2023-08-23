@@ -255,6 +255,7 @@ class MappingNetwork(torch.nn.Module):
         if self.num_ws is not None:
             with torch.autograd.profiler.record_function('broadcast'):
                 x = x.unsqueeze(1).repeat([1, self.num_ws, 1])
+        print("num_ws: ", self.num_ws)
 
         # Apply truncation.
         if truncation_psi != 1:
@@ -395,7 +396,7 @@ class SynthesisBlock(torch.nn.Module):
         if in_channels == 0:
             self.const = torch.nn.Parameter(torch.randn([out_channels, resolution, resolution]))
 
-        if in_channels != 0:
+        if in_channels != 0: ## False for the first layer (4 * 4) 
             self.conv0 = SynthesisLayer(in_channels, out_channels, w_dim=w_dim, resolution=resolution, up=2,
                 resample_filter=resample_filter, conv_clamp=conv_clamp, channels_last=self.channels_last, **layer_kwargs)
             self.num_conv += 1
@@ -404,7 +405,7 @@ class SynthesisBlock(torch.nn.Module):
             conv_clamp=conv_clamp, channels_last=self.channels_last, **layer_kwargs)
         self.num_conv += 1
 
-        if is_last or architecture == 'skip':
+        if is_last or architecture == 'skip':  ## True
             self.torgb = ToRGBLayer(out_channels, img_channels, w_dim=w_dim,
                 conv_clamp=conv_clamp, channels_last=self.channels_last)
             self.num_torgb += 1
@@ -487,6 +488,7 @@ class SynthesisNetwork(torch.nn.Module):
         fp16_resolution = max(2 ** (self.img_resolution_log2 + 1 - num_fp16_res), 8)
 
         self.num_ws = 0
+        # print("block_resolutions: ", self.block_resolutions)
         for res in self.block_resolutions:
             in_channels = channels_dict[res // 2] if res > 4 else 0
             out_channels = channels_dict[res]
@@ -495,15 +497,21 @@ class SynthesisNetwork(torch.nn.Module):
             block = SynthesisBlock(in_channels, out_channels, w_dim=w_dim, resolution=res,
                 img_channels=img_channels, is_last=is_last, use_fp16=use_fp16, **block_kwargs)
             self.num_ws += block.num_conv
+            
+            # print("\t num_ws: ", self.num_ws)
+            
             if is_last:
                 self.num_ws += block.num_torgb
             setattr(self, f'b{res}', block)
+        # print("num_ws: ", self.num_ws)
 
     def forward(self, ws, return_feature=False, **block_kwargs):
         block_ws = []
         features = []
         with torch.autograd.profiler.record_function('split_ws'):
-            misc.assert_shape(ws, [None, self.num_ws, self.w_dim])
+            print("ws: ", ws.shape, "num_ws: ", self.num_ws, "w_dim: ", self.w_dim)
+            misc.assert_shape(ws, [None, self.num_ws, self.w_dim]) ########### ERROR
+            
             ws = ws.to(torch.float32)
             w_idx = 0
             for res in self.block_resolutions:

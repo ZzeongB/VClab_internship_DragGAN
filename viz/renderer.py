@@ -21,8 +21,17 @@ import matplotlib.cm
 import dnnlib
 from torch_utils.ops import upfirdn2d
 import legacy # pylint: disable=import-error
+from torch_utils.common import tensor2im
+from argparse import Namespace
 
+import torchvision.transforms as transforms
+from collections import OrderedDict
 #----------------------------------------------------------------------------
+def get_keys(d, name):
+	if 'state_dict' in d:
+		d = d['state_dict']
+	d_filt = {k[len(name) + 1:]: v for k, v in d.items() if k[:len(name)] == name}
+	return d_filt
 
 class CapturedException(Exception):
     def __init__(self, msg=None):
@@ -131,12 +140,32 @@ class Renderer:
         return res
 
     def get_network(self, pkl, key, **tweak_kwargs):
+        is_torch = 'pt' in pkl
+
         data = self._pkl_data.get(pkl, None)
         if data is None:
             print(f'Loading "{pkl}"... ', end='', flush=True)
             try:
-                with dnnlib.util.open_url(pkl, verbose=False) as f:
-                    data = legacy.load_network_pkl(f)
+                if is_torch:
+                    ### Loading for pSp encoder! and StyleTransformer! ###
+                    data = torch.load(pkl) 
+                    opts = data['opts']
+
+                    opts['checkpoint_path'] = pkl
+                    if 'learn_in_w' not in opts:
+                        opts['learn_in_w'] = False
+                    if 'output_size' not in opts:
+                        opts['output_size'] = 1024
+                    
+                    opts = Namespace(**opts)
+                    print(opts)
+                    self.opts = opts
+                    
+                    self.opts.n_styles = int(math.log(self.opts.output_size, 2)) * 2 - 2
+                    
+                else:
+                    with dnnlib.util.open_url(pkl, verbose=False) as f:
+                        data = legacy.load_network_pkl(f)
                 print('Done.')
             except:
                 data = CapturedException()
@@ -146,12 +175,17 @@ class Renderer:
         if isinstance(data, CapturedException):
             raise data
 
-        orig_net = data[key]
-        cache_key = (orig_net, self._device, tuple(sorted(tweak_kwargs.items())))
-        net = self._networks.get(cache_key, None)
-        if net is None:
+        if not is_torch: 
+            orig_net = data[key]
+            cache_key = (orig_net, self._device, tuple(sorted(tweak_kwargs.items())))
+            net = self._networks.get(cache_key, None)
+        
+        if is_torch or net is None:
             try:
-                if 'stylegan2' in pkl:
+                if is_torch:
+                    from training.networks_torch_stylegan2 import Generator
+                    from training.networks_gradient import G_mapping, G_synthesis
+                elif 'stylegan2' in pkl:
                     from training.networks_stylegan2 import Generator
                 elif 'stylegan3' in pkl:
                     from training.networks_stylegan3 import Generator
@@ -160,17 +194,45 @@ class Renderer:
                 else:
                     raise NameError('Cannot infer model type from pkl name!')
 
-                print(data[key].init_args)
-                print(data[key].init_kwargs)
+                if not is_torch:
+                    print(data[key].init_args)
+                    print(data[key].init_kwargs)
+
                 if 'stylegan_human' in pkl:
                     net = Generator(*data[key].init_args, **data[key].init_kwargs, square=False, padding=True)
+                elif is_torch:
+                    #net = G_synthesis(resolution=1024) # Gradient Descent
+                    net = Generator(self.opts.output_size) # pSp
+                    #net = nn.DataParallel(Generator(self.opts.output_size)) # style_transformer
                 else:
                     net = Generator(*data[key].init_args, **data[key].init_kwargs)
-                net.load_state_dict(data[key].state_dict())
+                
+                if is_torch:
+                    ### Loading for StyleTransformer! ###
+                    '''print("checkpoint path", self.opts.checkpoint_path)
+                    ckpt = torch.load((self.opts.checkpoint_path), map_location='cpu')
+                    net.load_state_dict( get_keys(ckpt, 'decoder'), strict=False)'''
+
+                    ### Loading for pSp encoder! ###
+                    print("checkpoint path", self.opts.checkpoint_path)
+                    ckpt = torch.load(self.opts.checkpoint_path, map_location='cpu')
+                    net.load_state_dict(get_keys(ckpt, 'decoder'), strict=False)
+
+                    ### Loading for Gradient Descent! ###
+                    '''g_all = nn.Sequential(OrderedDict([('g_mapping', G_mapping()),
+                                                    ('g_synthesis', G_synthesis(resolution=1024))
+                                                    ]))
+                    # Load the pre-trained model
+                    g_all.load_state_dict(data, strict=False)
+                    g_all.eval()
+                    net = g_all[1]'''
+
+                else: net.load_state_dict(data[key].state_dict())
+
                 net.to(self._device)
             except:
                 net = CapturedException()
-            self._networks[cache_key] = net
+            if not is_torch: self._networks[cache_key] = net
             self._ignore_timing()
         if isinstance(net, CapturedException):
             raise net
@@ -219,12 +281,13 @@ class Renderer:
         ):
         # Dig up network details.
         self.pkl = pkl
-        G = self.get_network(pkl, 'G_ema')
-        self.G = G
-        res.img_resolution = G.img_resolution
-        res.num_ws = G.num_ws
-        res.has_noise = any('noise_const' in name for name, _buf in G.synthesis.named_buffers())
-        res.has_input_transform = (hasattr(G.synthesis, 'input') and hasattr(G.synthesis.input, 'transform'))
+        G = self.get_network(pkl, 'G_ema') 
+        print("is DataParallel", isinstance(G, torch.nn.DataParallel))
+        self.G = G.module if isinstance(G, torch.nn.DataParallel) else G
+        res.img_resolution = self.G.img_resolution 
+        res.num_ws = self.G.num_ws
+        res.has_noise = (hasattr(G, 'synthesis')) and any('noise_const' in name for name, _buf in self.G.synthesis.named_buffers())
+        res.has_input_transform = (hasattr(G, 'synthesis')) and (hasattr(self.G.synthesis, 'input') and hasattr(self.G.synthesis.input, 'transform')) 
 
         # Set input transform.
         if res.has_input_transform:
@@ -234,19 +297,20 @@ class Renderer:
                     m = np.linalg.inv(np.asarray(input_transform))
             except np.linalg.LinAlgError:
                 res.error = CapturedException()
-            G.synthesis.input.transform.copy_(torch.from_numpy(m))
+            self.G.synthesis.input.transform.copy_(torch.from_numpy(m))
 
-        # Generate random latents.
+        # Generate random latents. or load existing latents
         self.w0_seed = w0_seed
         self.w_load = w_load
 
         if self.w_load is None:
             # Generate random latents.
             z = torch.from_numpy(np.random.RandomState(w0_seed).randn(1, 512)).to(self._device, dtype=self._dtype)
+            #z = torch.tensor([[0.5] * 512], device=self._device, dtype=self._dtype)  # 예시로 모든 값이 0.5인 벡터로 설정
 
             # Run mapping network.
-            label = torch.zeros([1, G.c_dim], device=self._device)
-            w = G.mapping(z, label, truncation_psi=trunc_psi, truncation_cutoff=trunc_cutoff)
+            label = torch.zeros([1, self.G.c_dim], device=self._device)
+            w = self.G.mapping(z, label, truncation_psi=trunc_psi, truncation_cutoff=trunc_cutoff)
         else:
             w = self.w_load.clone().to(self._device)
 
@@ -308,7 +372,7 @@ class Renderer:
 
         # Run synthesis network.
         label = torch.zeros([1, G.c_dim], device=self._device)
-        img, feat = G(ws, label, truncation_psi=trunc_psi, noise_mode=noise_mode, input_is_w=True, return_feature=True)
+        img, feat = G([ws], label, truncation_psi=1, noise_mode=noise_mode, input_is_w=True, return_feature=True) ## dont forget [ws] -pSp
 
         h, w = G.img_resolution, G.img_resolution
 
@@ -324,7 +388,7 @@ class Renderer:
                     py, px = round(point[0]), round(point[1])
                     self.feat_refs.append(self.feat0_resize[:,:,py,px])
                 self.points0_pt = torch.Tensor(points).unsqueeze(0).to(self._device) # 1, N, 2
-
+            
             # Point tracking with feature matching
             with torch.no_grad():
                 for j, point in enumerate(points):
@@ -371,7 +435,6 @@ class Renderer:
                 self.w_optim.zero_grad()
                 loss.backward()
                 self.w_optim.step()
-
         # Scale and convert to uint8.
         img = img[0]
         if img_normalize:
@@ -382,7 +445,10 @@ class Renderer:
             from PIL import Image
             img = img.cpu().numpy()
             img = Image.fromarray(img)
+        
+        # img = tensor2im(img[0])
+
         res.image = img
         res.w = ws.detach().cpu().numpy()
-
+        
 #----------------------------------------------------------------------------
